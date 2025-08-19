@@ -18,53 +18,53 @@ Kota besar seperti New York selalu punya dinamika permintaan taksi yang tidak me
 
 Masalah inti yang dijawab: bagaimana menurunkan waktu tunggu dan mengurangi macetnya mobil di zona sepi dengan mengalokasikan supply berbasis pola permintaan dan arus OD yang teramati? Secara khusus, kita ingin memastikan bahwa zona dengan pickup tinggi tidak men-drop mobil ke “lubang hitam” (zona low-demand) secara sistematis, sekaligus menjaga kecepatan/efisiensi perjalanan dan memaksimalkan metrik proxy pendapatan (revenue per minute/mile) tanpa mengorbankan ketersediaan untuk pelanggan di jam puncak.
 
-**Data**
+Data Preparation
 
-Dataset berasal dari NYC TLC Trip Record (format green taxi/analog) dengan variabel utama waktu jemput/antar, ID zona asal (PULocationID), ID zona tujuan (DOLocationID), jarak tempuh, jumlah penumpang, serta nilai pembayaran (jika tersedia). Data Dictionary resmi TLC digunakan untuk menjaga konsistensi definisi. Notebook memuat langkah pemuatan data (read_csv), pemeriksaan struktur (info(), head()), pemetaan variabel kategori (mis. RatecodeID, payment_type, trip_type), serta pemeriksaan cepat nilai kosong/aneh pada kolom kunci agar analisis berikutnya tidak “dibajak” oleh noise yang tidak relevan.
+Load & tipe data: parsing lpep_pickup_datetime/lpep_dropoff_datetime, konversi numerik (trip_distance, passenger_count, total_amount bila ada).
+Fitur waktu: pickup_date, pickup_hour (0–23), pickup_ts (dibulatkan jam), pickup_tod4 (pagi/siang/sore/malam).
+Durasi & efisiensi: trip_duration_min = dropoff - pickup, speed_mph = distance / hours, dur_per_mile = menit/mil (untuk efisiensi rute).
+Imputasi passenger_count: isi NA berbasis kategori trip_distance_cat × pickup_tod4 (median per kategori) supaya sesuai konteks panjang trip & waktu.
 
-**Data Understanding & Cleaning**
+Penanganan outlier:
 
-Tahap ini fokus memastikan data cukup bersih untuk inferensi tanpa over-cleaning yang melenyapkan sinyal permintaan. Pertama, dilakukan pemeriksaan tipe data dan distribusi nilai agar potensi kesalahan format (datetime/string/angka) segera diperbaiki. Kedua, dilakukan range check seperti total_amount >= 0 untuk menghindari nilai negatif yang tidak masuk akal, kemudian membuang kolom yang kosong total (misalnya ehail_fee) karena tidak memberi informasi analitis. Ketiga, dilakukan pemeriksaan duplikasi dengan subset kunci (VendorID, pickup/dropoff datetime, PU/DO, total_amount) dan hasilnya tidak menunjukkan duplikat signifikan, sehingga kita lanjut. Keempat, untuk missing values, notebook menampilkan total NA dan memeriksa kolom spesifik seperti store_and_fwd_flag, serta distribusi kategori RatecodeID, payment_type, dan trip_type guna memahami ragam transaksi yang mungkin memengaruhi struktur tarif.
+trip_distance: flag IQR; analisis sensitif (speed/rev/min) pakai winsorize ringan (mis. P1–P99).
+Durasi ekstrem: >500 menit dianggap anomali operasional → dikecualikan dari metrik speed/efisiensi, tetap dihitung untuk permintaan (pickup count).
+revenue_per_min cenderung bias ke atas pada trip sangat pendek → gunakan median/IQR & winsorize saat perlu.
+Panel zona×jam & OD: agregasi pu_count (pickup) dan do_count (dropoff) per PULocationID × pickup_ts; turunkan next_pu (pickup jam berikutnya di origin = wait proxy), net_flow = PU − DO
+trip_len_cat (short/mid/long via kuartil), hotspot = top-decile zona berdasarkan total pickup.
 
-**Prinsip Menangani Outlier & Anomali**
+Data Analysis
 
-Outlier tidak otomatis “jahat”—ia sering bagian dari realitas kota (perjalanan sangat pendek dekat bandara, tol/ surcharge tertentu, atau traffic ekstrem). Karena itu, kita menandai dan membatasi dampaknya alih-alih sembarang membuang. Untuk trip distance, kita pakai IQR rule untuk flagging, sementara untuk analisis sensitif (speed/efisiensi) digunakan winsorize ringan (mis. P1–P99) agar ekor distribusi tidak mengendalikan kesimpulan. Untuk durasi yang tidak wajar (mis. >500 menit)—yang bisa mencerminkan idle atau perangkat menyala—kita tidak menghapus baris untuk perhitungan demand (pickup count) tetapi mengecualikannya khusus ketika menghitung speed/efisiensi. Untuk revenue per minute, kita sadar metrik ini bias ke atas pada perjalanan sangat pendek (base fare + surcharge dibagi menit yang sedikit), sehingga ringkasan hasil dan uji statistik menggunakan median/IQR dan uji nonparametrik agar robust.
+1. Temporal Demand Intensity
+Across hours (0–23): pakai share per jam per hari; Kruskal–Wallis ⇒ distribusi antar jam berbeda signifikan.
+Peak 15–18: di dalam 15–18 relatif homogen; Wilcoxon paired (per-hari) ⇒ peak > jam lain.
+Weekday vs weekend: total pickup harian beda (Mann–Whitney U), sesuai pola aktivitas.
 
-**Imputasi Passenger Count (Berbasis Konteks)**
+2. Zone Hotspot — Strength & Stability
+Konsentrasi: top-decile zona menyumbang >50% pickup (Chi-square vs baseline 10%; per-hari Wilcoxon > 0.5).
+Stabilitas: ranking zona ramai stabil antar hari (Spearman tinggi terhadap rata-rata lintas hari).
+Kualitas hotspot: hotspot punya wait proxy (next_pu) lebih tinggi (MWU, greater), net_flow > 0 (Wilcoxon), dan dur_per_mile lebih rendah (MWU, less) → ramai, cepat “hidup lagi”, dan efisien.
 
-Karena fokus kebijakan tidak bertumpu pada tarif/fee, sedangkan jumlah penumpang berguna untuk analisis perilaku, kita mengisi NA passenger_count berdasarkan konteks waktu & panjang perjalanan. Notebook membuat dua fitur kategoris: trip_distance_cat (mis. via kuartil atau bin data-driven) dan pickup_tod4 (pagi–siang–sore–malam dari jam pickup). Lalu dihitung median passenger_count untuk setiap kombinasi kategori itu, dan dibuat mapping untuk mengisi passenger_count yang kosong per baris sesuai (trip_distance_cat, pickup_tod4) masing-masing. Strategi ini menjaga keadilan antar situasi yang berbeda (trip jauh malam ≠ trip pendek pagi), dan lebih stabil daripada mean.
+3. Travel Speed 
+Speed beda antar jam (Kruskal–Wallis); jam teramai cenderung lebih lambat.
+Sehingga disimpulkan ada infikasi keramaian atau kemacetan
 
-**Feature Engineering — Waktu, Panel, Efisiensi, dan Arus**
+4. Trip Length Mix
+Rush menaikkan jumlah short-trip 
+Long-trip lebih sering berakhir di zona low-demand (Chi-square).
 
-Agar analisis menjawab kebutuhan operasional, notebook menurunkan sekumpulan fitur: (a) waktu: pickup_hour (0–23), pickup_date, pickup_ts (dibulatkan ke jam), dan pickup_tod4; (b) durasi & speed: trip_duration_min dari selisih waktu jemput–antar, speed_mph = distance / hours, serta dur_per_mile (menit per mil) untuk melihat efisiensi; (c) panel zone×hour: pu_count (pickup), do_count (dropoff), next_pu (pickup di jam berikutnya pada zona yang sama sebagai wait proxy), net_flow = PU − DO (positif artinya zona “menyedot” mobil), dan severity = |PU−DO|/(PU+DO) (0–1) yang mengukur ketidakseimbangan relatif; (d) OD features: tabel OD, top-N OD, dan (opsional) entropy tujuan per origin; (e) trip length mix: kategori short/mid/long berbasis kuartil; (f) passenger: pc_use (1–6) dan is_multi (≥2); (g) same-zone: flag PU==DO; dan (h) hotspot: top-decile zona berdasarkan total pickup selama periode.
-
-**Temporal Demand Intensity — Puncak Jam & Pola Harian**
-
-Notebook membangun panel hari×jam dan menghitung share per jam per hari (pickup_share) agar perbandingan antar-jam adil meskipun volume total harian berbeda. Dengan basis ini, dilakukan Kruskal–Wallis pada 24 grup jam untuk menguji apakah distribusi share antar-jam berbeda signifikan; hasil yang signifikan membuktikan pola jam tidak seragam. Setelah itu, notebook memverifikasi “peak window 15–18” lewat dua langkah: (1) Kruskal–Wallis hanya di dalam jam 15–18 untuk memastikan keempat jam tersebut homogen (jika p≥0.05, boleh diperlakukan sebagai satu blok), dan (2) Wilcoxon paired antara rata-rata share per hari di blok 15–18 terhadap jam lainnya, yang menangkap perbedaan dalam hari yang sama (lebih bersih dari bias hari ramai vs sepi). Terakhir, untuk weekday vs weekend, notebook mengagregasi total pickup harian dan menjalankan Mann–Whitney U dua arah; ini menjawab apakah ada pergeseran tingkat permintaan harian antar jenis hari secara signifikan.
-
-**Zone Hotspot — Strength & Stability**
-
-Bagian ini menilai apakah permintaan terkonsentrasi di sedikit zona dan apakah rankingnya stabil. Pertama, dihitung porsi pickup yang berasal dari 10% zona teratas (top-decile share) lalu diuji terhadap baseline “acak” 10%/90% menggunakan Chi-square; notebook juga melakukan Wilcoxon satu-sampel terhadap 50% per hari, untuk menyatakan bahwa median share top-decile > 0.5 pada hari-hari tipikal. Kedua, stabilitas ranking diperiksa dengan membuat matriks hari×zona dan menghitung Spearman rank correlation antara ranking setiap hari dan ranking referensi (rata-rata lintas hari); rho yang tinggi menunjukkan stabilitas hotspot sehingga layak jadi fokus operasional. Ketiga, untuk melihat kualitas hotspot, notebook menghitung wait proxy next_pu pada level zona×jam dan membandingkannya antara hotspot vs non-hotspot dengan Mann–Whitney U (alternative “greater”); hotspot yang bagus bukan hanya ramai saat ini tapi cepat ramai lagi. Keempat, notebook menghitung net_flow = PU−DO per zona×jam lalu menjumlahkannya per zona×hari—kemudian Wilcoxon satu-sampel (alternative “greater”) untuk memastikan median net inflow di hotspot memang positif, artinya mobil cenderung masuk ke sana daripada keluar. Kelima, untuk efisiensi, dihitung dur_per_mile pada trip valid (jarak>0, durasi 1–300 menit) dan dibandingkan hotspot vs non-hotspot menggunakan Mann–Whitney U (less); hasil “lebih rendah” pada hotspot menunjukkan efisiensi per mil lebih baik, relevan untuk produktivitas.
-
-**Drop-off Dispersion & Flow Imbalance**
-
-Supaya supply tidak “tenggelam” setelah di-drop, notebook mengamati penyebaran tujuan dari setiap origin. Secara kualitatif, origin yang baik seharusnya mengirim mobil ke wilayah yang produktif atau setidaknya mudah kembali ke arus permintaan; secara kuantitatif, indikator seperti entropy tujuan, asimetri OD (A→B ≠ B→A), serta matrix severity membantu melihat pola zona yang berpotensi menguras supply. Notebook menyarankan memantau severity per zona×jam untuk mengidentifikasi waktu-waktu di mana ketidakseimbangan memuncak sehingga reposisi proaktif bisa dilakukan sebelum “tabrakan” permintaan–supply terjadi.
-
-**Travel Speed & Congestion**
-
-Notebook membentuk speed_mph dari jarak/durasi dan menyiapkan versi aman speed_mph_use (mis. 1–65 mph) agar noise ekstrem tidak mengacaukan inferensi. Pertama, Kruskal–Wallis antar 24 jam memastikan perbedaan kecepatan memang nyata; ini penting untuk memvalidasi jam puncak tidak hanya ramai tetapi juga lambat (kongruen dengan kemacetan). Kedua, dibuat residual speed yaitu selisih speed_mph_use terhadap median speed_mph_use di zona×jam (baseline lokal)—lalu Wilcoxon (alternative “less”) di jam rush untuk membuktikan residual median negatif, artinya kecepatan turun di puncak dibanding standar zona×jam-nya sendiri. Ketiga, di level zona×jam, notebook menggabungkan median speed dengan severity untuk menguji Spearman; korelasi negatif mendukung intuisi: makin timpang arusnya, makin bermasalah lingkungan lalu lintasnya. Keempat, efisiensi dur_per_mile dibandingkan antar top-N OD (mis. 10 rute teratas) dengan Kruskal–Wallis untuk menangkap perbedaan rute yang layak “diutamakan” saat rush. Kelima, untuk melengkapi cerita, dibuat panel hari×jam berisi median speed dan jumlah pickup; Spearman yang negatif serta MWU antara kuartil teramai vs tersepi menguatkan bahwa keramaian jam memang berkorelasi dengan penurunan kecepatan.
-
-**Trip Length Mix**
-
-Panjang trip memengaruhi produktivitas: short-trip memberi putaran cepat namun bias rev/min; long-trip bisa menjauhkan mobil dari sumber demand. Notebook membentuk trip_len_cat (short/mid/long) berbasis kuartil, lalu (H1) menguji via Chi-square apakah share short-trip meningkat saat rush; hasil “iya” mendorong strategi pengelolaan queue di jam puncak. (H2) Di level zona×jam, notebook menghitung share_short dan next_pu, lalu menguji Spearman serta MWU (high vs low share_short) untuk menilai apakah origin dengan proporsi short tinggi cenderung cepat ramai lagi. (H3) Untuk risiko “nyangkut”, notebook menandai zona low-demand (kuartil bawah PU total) dan menguji Chi-square apakah long-trip lebih sering berakhir di sana; jika iya, perlu reposisi pasca long-trip. (H4) Kruskal–Wallis pada trip_distance antar jam memeriksa dinamika campuran panjang trip sepanjang hari. (H5) Terakhir, notebook memeriksa share long vs severity (Spearman/MWU) untuk memastikan lonjakan long-trip tidak memicu ketidakseimbangan arus.
-
-**Passenger**
-
-Bagian penumpang fokus pada jumlah penumpang per trip dan dampaknya. (H1) Kruskal–Wallis antar jam membuktikan distribusi passenger_count tidak seragam—masuk akal karena pola komuter/hiburan berpindah seiring waktu. (H2) Notebook menghitung share multi-passenger (≥2) per hari×jam lalu melakukan Wilcoxon paired antara sore puncak (mis. 15–18) vs jam lainnya per hari; hasil “greater” menunjukkan sore memang lebih banyak rombongan. (H3) Secara harian, Mann–Whitney U membandingkan weekend vs weekday untuk share multi; hasil “lebih besar” di weekend selaras dengan pola rekreasi. (H4) Notebook menguji hubungan passenger_count terhadap panjang trip dengan Kruskal antar band (1, 2, 3+) serta Spearman; arah positif memberi sinyal perjalanan bersama cenderung lebih jauh. (H5) Terakhir, MWU membandingkan kecepatan trip solo vs multi; perbedaan di sini memengaruhi estimasi waktu layanan untuk kendaraan multi-occupancy.
-
-**Utilization & Earnings Proxy**
-
-Untuk mendekati sisi pendapatan/produktivitas, notebook membentuk revenue per minute (total_amount / durasi) dan revenue per mile (jika perlu), dengan catatan kuat bahwa metrik ini bias ke trip pendek karena ada komponen base/surcharge. (H1) Kruskal–Wallis antar zona menunjukkan perbedaan pendapatan per menit yang sistematis, penting untuk prioritisasi staging. (H2) Kruskal–Wallis antar ToD (pagi/siang/sore/malam) memberi gambaran waktu yang paling “menghasilkan”. (H3) Di level zona×jam, Spearman antara median rev/min dan severity secara ideal negatif—zona yang ketidakseimbangannya tinggi cenderung berujung pendapatan realisasi yang kurang efisien. (H4) Mann–Whitney U (hotspot > non-hotspot) menguji klaim bahwa hotspot bukan hanya ramai tapi juga lebih produktif per menit. (H5) Akhirnya, notebook menguji apakah rush meningkatkan rev/min di hotspot (MWU greater), untuk menjustifikasi penambahan supply saat jam-jam tersebut. Saat total_amount tidak tersedia atau diragukan, notebook memakai fallback pu_count sebagai proxy utilization, menjaga konsistensi arsitektur analisis.
-
-**Rekomendasi Operasional**
-Berdasarkan hasil pengujian, notebook menyarankan pola kerja: staging armada memasuki peak window 15–18 lebih awal dengan fokus pada hotspot stabil (top-decile dengan share tinggi dan ranking konsisten), kemudian reposisi setelah puncak menuju origin yang memiliki next_pu tinggi serta net_flow tidak negatif, sehingga mobil tidak larut ke zona low-demand. Pada jam-jam speed turun dan severity naik, pengemudi diarahkan ke OD efisien (min/mile kecil) dan dihindarkan dari rute “jebakan” yang menguras supply. Untuk long-trip yang cenderung menuju low-demand, segera nudge reposisi kembali ke sumber permintaan. Pada weekend dan jam sore, antisipasi multi-passenger yang lebih tinggi sambil mempertimbangkan jenis kendaraan/strategi tarif yang relevan.
+5. Passenger
+passenger_count beda antar jam (KW).
+Share multi (≥2) lebih tinggi sore (15–18) (Wilcoxon paired per-hari) dan weekend (MWU).
+pc ↑ ↔ distance ↑ (KW/Spearman); speed trip solo vs multi berbeda (MWU).
+8) Utilization & Earnings Proxy
+revenue_per_min beda antar zona dan beda antar ToD (KW).
+Severity berasosiasi negatif dengan revenue_per_min (Spearman).
+Hotspot memiliki rev/min lebih tinggi (MWU), dan rush menaikkan rev/min di hotspot (MWU).
+Catatan: interpretasi rev/min hati-hati pada trip pendek; gunakan median & winsorize.
+Rekomendasi & Kesimpulan Insight
+Staging & penempatan: fokuskan supply ke hotspot stabil menjelang 15:00, pertahankan hingga 18:00; lakukan reposisi terencana setelah puncak menuju origin dengan next_pu tinggi dan net_flow ≥ 0.
+Mitigasi flow imbalance: pantau severity zona×jam; hindari pola OD yang “menguras” supply (A→B) tanpa aliran balik. Setelah long-trip ke low-demand, berikan nudge reposisi ke sumber demand.
+Efisiensi rute: prioritaskan OD efisien (dur_per_mile rendah) saat rush; awareness bahwa speed menurun ketika jam teramai.
+Kapasitas penumpang: sore & weekend cenderung multi-passenger; siapkan jenis kendaraan/operasi yang sesuai.
+Produktivitas driver: pilih zona dengan kombinasi rev/min median tinggi + next_pu tinggi − severity rendah (skor komposit sederhana).
